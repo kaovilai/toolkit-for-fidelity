@@ -8,14 +8,16 @@
 // never clicks Preview Order or submits: you review and submit yourself.
 'use strict';
 (() => {
-  if (!location.pathname.includes('/portfolio/positions')) return;
-
   const log = makeDebugLog('[FMC-MMF]');
   const M = MmfModel;
   const { MESSAGE_TYPES, STORAGE_KEY_SETTINGS } = FMC_CONSTANTS;
   const PANEL_ID = 'fmc-mmf-panel';
   const BTN_CLASS = 'fmc-mmf-btn';
   const CALL_TIMEOUT_MS = 25000;
+
+  // Fidelity is an SPA: the content script loads once per full page load, so landing on another page
+  // and navigating here client-side never re-runs it. Check the path on every scan, not at load.
+  const onPositionsPage = () => location.pathname.includes('/portfolio/positions');
 
   let enabled = true;
   let observer = null;
@@ -99,8 +101,14 @@
     document.body.append(fab);
   }
 
+  function removeUi() {
+    for (const b of document.querySelectorAll(`.${BTN_CLASS}`)) b.remove();
+    closePanel();
+  }
+
   function scan() {
     if (!enabled) return;
+    if (!onPositionsPage()) { removeUi(); return; }
     ensureFab();
     const live = new Set();
     for (const { row, cell, ticker } of mmfCells()) {
@@ -475,8 +483,7 @@
     observer?.disconnect();
     observer = null;
     clearTimeout(scanTimer);
-    for (const b of document.querySelectorAll(`.${BTN_CLASS}`)) b.remove();
-    closePanel();
+    removeUi();
   }
 
   async function init() {
