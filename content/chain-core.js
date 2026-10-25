@@ -72,15 +72,30 @@ const ChainCore = (() => {
    * @returns {Promise<string|null>}
    */
   async function fetchDefaultAccount() {
-    const resp = await fetch(FMC_CONSTANTS.API.ACCOUNTS_ENDPOINT, {
-      method: 'POST',
-      headers: { 'content-type': 'application/json', accept: '*/*' },
-      credentials: 'include',
-      body: JSON.stringify({
-        acctCategory: 'Brokerage',
-        filters: { returnAcctTradeAttrDetail: true, returnPreferenceDetail: true }
-      })
-    });
+    const retryable = new Set(FMC_CONSTANTS.RETRYABLE_ERROR_TYPES);
+    // Retry transient failures (5xx/408/429/network) with exponential backoff, like every other Fidelity call.
+    const resp = await Retry.withBackoff(async () => {
+      let r;
+      try {
+        r = await fetch(FMC_CONSTANTS.API.ACCOUNTS_ENDPOINT, {
+          method: 'POST',
+          headers: { 'content-type': 'application/json', accept: '*/*' },
+          credentials: 'include',
+          body: JSON.stringify({
+            acctCategory: 'Brokerage',
+            filters: { returnAcctTradeAttrDetail: true, returnPreferenceDetail: true }
+          })
+        });
+      } catch (e) {
+        throw Object.assign(new Error(e.message), { type: ERROR_TYPES.NETWORK_ERROR });
+      }
+      if (!isSessionExpiredResponse(r) && isRetryableHttpStatus(r.status)) {
+        const retryAfterMs = parseRetryAfterMs(r.headers.get('Retry-After'), FMC_CONSTANTS.MAX_RETRY_AFTER_MS);
+        throw Object.assign(new Error(`HTTP ${r.status}`), { type: ERROR_TYPES.API_ERROR, retryAfterMs });
+      }
+      return r;
+    }, retryable).catch(err => (retryable.has(err?.type) ? null : Promise.reject(err)));
+    if (!resp) return null;
     if (isSessionExpiredResponse(resp)) throw Object.assign(new Error('Session expired'), { type: ERROR_TYPES.SESSION_EXPIRED });
     if (!resp.ok) return null;
     const list = (await resp.json())?.data?.getAccountContext?.acctDetails;
