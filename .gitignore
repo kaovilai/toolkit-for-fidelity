@@ -9,3 +9,7 @@ _metadata/
 test-*.js
 tmp-*.json
 .playwright-mcp
+
+# CRX signing key (never commit)
+*.pem
+*.crx

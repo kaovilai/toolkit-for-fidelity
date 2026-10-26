@@ -227,6 +227,23 @@ fidelity-margin-calculator-auto/
 ├── curl-resp.sample, sample-curl-from-browser.txt.sample, *.html.sample  # Reference captures
 ```
 
+## Install
+
+**Chrome / Chromium on desktop:** see [Development](#development) to load the unpacked folder.
+
+**Titanium Browser (Android):** each [release](https://github.com/kaovilai/toolkit-for-fidelity/releases/latest) carries a signed `toolkit-for-fidelity.crx`. It installs once and then updates itself.
+
+1. Open Titanium's address bar and paste (a plain link to the `.crx` only downloads the file):
+
+   ```
+   chrome-extension://jlbggdgofbcndkkdimpeccablefilpkm/install.html#https://github.com/kaovilai/toolkit-for-fidelity/releases/latest/download/toolkit-for-fidelity.crx
+   ```
+
+   Or download the `.crx` and use *Titanium Extension → Options → install from file*.
+2. Tap **Download**, then **Keep**, then **Add extension**.
+
+Updates then arrive automatically through the extension's `update_url`. An install from a folder or zip has a different extension ID, so export your settings, install the `.crx`, import them, and remove the old copy.
+
 ## Development
 
 ```bash

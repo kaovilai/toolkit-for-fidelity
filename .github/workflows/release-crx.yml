@@ -1,0 +1,61 @@
+name: Release CRX
+
+# Builds a signed CRX on every v* tag and attaches it (plus updates.xml) to the GitHub release.
+# Needs the CRX_PEM_B64 secret (base64 of the signing key); the same key keeps the extension ID
+# stable, which is what lets Chromium-based browsers (e.g. Titanium on Android) update in place.
+
+on:
+  push:
+    tags:
+      - "v*"
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Check tag matches manifest version
+        run: |
+          version=$(jq -r .version manifest.json)
+          if [ "v$version" != "$GITHUB_REF_NAME" ]; then
+            echo "Tag $GITHUB_REF_NAME does not match manifest version $version" >&2
+            exit 1
+          fi
+          echo "VERSION=$version" >> "$GITHUB_ENV"
+
+      - name: Stage shipped files
+        run: |
+          mkdir -p stage
+          cp -r manifest.json background.js rules.json content lib popup icons stage/
+          # Icon generator source is not part of the extension.
+          rm -f stage/icons/generate.py stage/icons/icon.svg
+
+      - name: Build signed CRX
+        env:
+          CRX_PEM_B64: ${{ secrets.CRX_PEM_B64 }}
+        run: |
+          test -n "$CRX_PEM_B64" || { echo "CRX_PEM_B64 secret is not set" >&2; exit 1; }
+          out=$(node scripts/build-crx.js stage toolkit-for-fidelity.crx \
+            --update-url "https://github.com/${{ github.repository }}/releases/latest/download/updates.xml")
+          echo "$out"
+          echo "EXT_ID=$(echo "$out" | jq -r .id)" >> "$GITHUB_ENV"
+
+      - name: Write updates.xml
+        run: |
+          cat > updates.xml <<XML
+          <?xml version='1.0' encoding='UTF-8'?>
+          <gupdate xmlns='http://www.google.com/update2/response' protocol='2.0'>
+            <app appid='${EXT_ID}'><updatecheck codebase='https://github.com/${{ github.repository }}/releases/download/${GITHUB_REF_NAME}/toolkit-for-fidelity.crx' version='${VERSION}'/></app>
+          </gupdate>
+          XML
+
+      - name: Publish release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release create "$GITHUB_REF_NAME" toolkit-for-fidelity.crx updates.xml \
+            --title "$GITHUB_REF_NAME" --generate-notes
