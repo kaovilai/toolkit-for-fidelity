@@ -250,6 +250,81 @@ importScripts('/lib/constants.js', '/lib/fetch-utils.js', '/lib/retry.js', '/lib
     }
   }
 
+  // --- Margin-calculator warm-up (cold-session 500 recovery) ---
+  // Until the margin calculator page has been loaded once per browsing session, every
+  // api-margin-calculator endpoint answers 500 "Unknown System Exception": the page's load
+  // sequence creates server-side state the API depends on. When a content script hits a
+  // retryable 5xx it sends WARM_MARGIN_CALC; this opens the page in a hidden tab, polls
+  // recovery through the tab's own WARM_PROBE listener (the service worker cannot call the
+  // API itself — its requests carry the extension origin, which Fidelity rejects), then
+  // closes the tab. Deduplicated across all tabs; cooldowns stop a genuine outage from
+  // churning tabs.
+  const WARM_SUCCESS_COOLDOWN_MS = 5 * 60 * 1000; // after a confirmed recovery, don't re-open
+  const WARM_FAILURE_COOLDOWN_MS = 60 * 1000;     // after a failed attempt, wait before retrying
+  const WARM_TAB_BUDGET_MS = 30 * 1000;           // total time allowed for tab load + probes
+  const WARM_PROBE_INTERVAL_MS = 1500;
+  let warmInflight = null;  // shared promise while a warm-up is running
+  let warmSucceededAt = 0;  // last confirmed recovery
+  let warmFailedAt = 0;     // last failed attempt (guards against tab churn during outages)
+
+  /**
+   * Asks the warm-up tab whether the margin-calculator API has recovered. The tab's
+   * margin-warmup.js listener runs the accounts/v1 check in page context (same-origin
+   * cookies) and answers; a tab whose content script hasn't loaded yet rejects, which
+   * counts as "not ready" rather than an error.
+   * @param {number} tabId - The hidden margin-calculator tab.
+   * @returns {Promise<boolean>}
+   */
+  function probeWarmTab(tabId) {
+    return new Promise((resolve) => {
+      try {
+        chrome.tabs.sendMessage(tabId, { _fmc: true, type: FMC_CONSTANTS.MESSAGE_TYPES.WARM_PROBE }, (resp) => {
+          if (chrome.runtime.lastError) return resolve(false);
+          resolve(!!resp?.ok);
+        });
+      } catch {
+        resolve(false);
+      }
+    });
+  }
+
+  /**
+   * Warms the margin-calculator backend: opens the page in a hidden tab and waits for the
+   * API to answer ok. Concurrent requests share one run; a recent success is returned
+   * without opening anything.
+   * @returns {Promise<boolean>} true when the backend answered ok.
+   */
+  function warmMarginCalculator() {
+    if (Date.now() - warmSucceededAt < WARM_SUCCESS_COOLDOWN_MS) return Promise.resolve(true);
+    if (warmInflight) return warmInflight;
+    warmInflight = (async () => {
+      if (Date.now() - warmFailedAt < WARM_FAILURE_COOLDOWN_MS) return false;
+      let tab = null;
+      try {
+        tab = await chrome.tabs.create({ url: FMC_CONSTANTS.API.MARGIN_CALCULATOR_PAGE_URL, active: false });
+        const deadline = Date.now() + WARM_TAB_BUDGET_MS;
+        while (Date.now() < deadline) {
+          await new Promise(r => setTimeout(r, WARM_PROBE_INTERVAL_MS));
+          if (await probeWarmTab(tab.id)) {
+            warmSucceededAt = Date.now();
+            log('Margin-calculator warm-up succeeded');
+            return true;
+          }
+        }
+        warn('Margin-calculator warm-up timed out — Fidelity may be having a real outage');
+        warmFailedAt = Date.now();
+        return false;
+      } catch (e) {
+        warn('Margin-calculator warm-up failed:', e?.message ?? e);
+        warmFailedAt = Date.now();
+        return false;
+      } finally {
+        if (tab?.id != null) chrome.tabs.remove(tab.id).catch(() => {});
+      }
+    })().finally(() => { warmInflight = null; });
+    return warmInflight;
+  }
+
   // --- Tax rates (IRS brackets + Tax Foundation state rates), cached 30 days ---
   const TAX_TTL_MS = 30 * 24 * 60 * 60 * 1000;
   // A result missing the IRS brackets or the state rate is retried after this (not cached for 30 days).
@@ -446,6 +521,12 @@ importScripts('/lib/constants.js', '/lib/fetch-utils.js', '/lib/retry.js', '/lib
 
         case FMC_CONSTANTS.MESSAGE_TYPES.FETCH_TAX_RATES:
           fetchTaxRates(String(msg.payload?.state ?? '')).then(sendResponse, (e) => sendResponse({ error: e?.message ?? 'fetch failed' }));
+          return true;
+
+        case FMC_CONSTANTS.MESSAGE_TYPES.WARM_MARGIN_CALC:
+          // Asynchronous: keep the message port open until the warm-up settles. Responds
+          // { ok: false } (never an error) so the caller's normal retry path is untouched.
+          warmMarginCalculator().then(ok => sendResponse({ ok }), () => sendResponse({ ok: false }));
           return true;
 
         default:

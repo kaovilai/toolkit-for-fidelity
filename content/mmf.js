@@ -79,14 +79,19 @@
 
   const FAB_ID = 'fmc-mmf-fab';
 
-  /** Account number for the always-visible button: the URL hash (#ZXXXXXXXX) or the last-used account. */
+  /**
+   * Account number for the always-visible button: the URL hash (#ZXXXXXXXX), else the shared
+   * page-agnostic resolver (lib/account-resolve.js: open trade ticket → last-used account →
+   * Fidelity's default tradable account via accounts/v1). ChainCore is null on the positions
+   * page (it only initializes on option-chain/Trader+), so the shared lib is used directly.
+   * Without the accounts/v1 fallback, a session that has never opened a trade ticket panel has
+   * nothing stored and the button could not resolve an account at all.
+   * @returns {Promise<string|null>}
+   */
   async function pageAccount() {
     const fromHash = /[A-Z]\d{8}/.exec(location.hash)?.[0];
     if (fromHash) return fromHash;
-    try {
-      const r = await chrome.storage.local.get([FMC_CONSTANTS.STORAGE_KEY_CHAIN_ACCOUNT, FMC_CONSTANTS.STORAGE_KEY_STATUS]);
-      return r[FMC_CONSTANTS.STORAGE_KEY_STATUS]?.accountNum ?? r[FMC_CONSTANTS.STORAGE_KEY_CHAIN_ACCOUNT] ?? null;
-    } catch { return null; }
+    try { return await AccountResolve.getAccount(); } catch { return null; }
   }
 
   /**
@@ -161,7 +166,7 @@
   async function compute() {
     const { account, reserve } = view;
     const out = { error: null };
-    if (!account) { out.error = 'Could not determine the account for this row.'; return out; }
+    if (!account) { out.error = 'Could not determine which account to use — open a trade ticket on this page first, then try again.'; return out; }
     await TaxContext.ready();
     const [status, fundsResp] = await Promise.all([PositionsAPI.fetchStatus(account), ask(MESSAGE_TYPES.FETCH_MMF_YIELDS)]);
     if (fundsResp.error) { out.error = fundsResp.error; out.retryable = true; return out; }
