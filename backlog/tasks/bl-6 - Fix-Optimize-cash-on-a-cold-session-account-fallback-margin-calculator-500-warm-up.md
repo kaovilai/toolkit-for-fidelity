@@ -3,11 +3,11 @@ id: BL-6
 title: >-
   Fix Optimize cash on a cold session: account fallback + margin-calculator 500
   warm-up
-status: In Progress
+status: Done
 assignee:
   - Tiger
 created_date: '2026-11-09 14:49'
-updated_date: '2026-11-09 15:13'
+updated_date: '2026-11-09 15:14'
 labels: []
 dependencies: []
 ordinal: 6000
@@ -21,11 +21,11 @@ Two independent failures make the Optimize cash button unusable on a fresh/cold 
 
 ## Acceptance Criteria
 <!-- AC:BEGIN -->
-- [ ] #1 The always-visible Optimize cash button resolves an account via the accounts/v1 fallback (open ticket → last-used → Fidelity default) instead of failing with "Could not determine the account for this row" on a session with nothing stored
-- [ ] #2 When current-status/v1, trade-calculator/v1 or accounts/v1 returns a retryable 5xx, the extension warms the backend (hidden margin-calculator page load) once and the existing retry then succeeds, instead of surfacing "HTTP 500 — try again in a minute"
-- [ ] #3 Warm-up is deduplicated: concurrent failing calls and repeated failures within the cooldown window open at most one hidden tab; the tab is always closed afterwards
-- [ ] #4 A genuine Fidelity outage still surfaces the plain-language error message (warm-up failure does not mask or change the error path)
-- [ ] #5 All modified files pass node --check; CLAUDE.md API notes updated to record the cold-session 500 behavior
+- [x] #1 The always-visible Optimize cash button resolves an account via the accounts/v1 fallback (open ticket → last-used → Fidelity default) instead of failing with "Could not determine the account for this row" on a session with nothing stored
+- [x] #2 When current-status/v1, trade-calculator/v1 or accounts/v1 returns a retryable 5xx, the extension warms the backend (hidden margin-calculator page load) once and the existing retry then succeeds, instead of surfacing "HTTP 500 — try again in a minute"
+- [x] #3 Warm-up is deduplicated: concurrent failing calls and repeated failures within the cooldown window open at most one hidden tab; the tab is always closed afterwards
+- [x] #4 A genuine Fidelity outage still surfaces the plain-language error message (warm-up failure does not mask or change the error path)
+- [x] #5 All modified files pass node --check; CLAUDE.md API notes updated to record the cold-session 500 behavior
 <!-- AC:END -->
 
 ## Implementation Plan
@@ -88,3 +88,15 @@ Re-verification after fixes: node --check all 10 files; harnesses all green — 
 
 ---
 <!-- COMMENTS:END -->
+
+## Final Summary
+
+<!-- SECTION:FINAL_SUMMARY:BEGIN -->
+Committed as a771731 on branch t3/neo-browser-tabs ("fix: self-heal cold-session margin-calculator 500s; resolve Optimize cash account anywhere").
+
+Changes: (1) FAB account fallback — mmf.js's pageAccount() delegates to the new page-agnostic lib/account-resolve.js (open ticket → last-used → accounts/v1 with retry), extracted from chain-core.js (null outside option-chain/Trader+ pages, so the original delegation idea was dead code on the positions page — caught in review). (2) Cold-session 500 recovery — on a retryable 5xx, positions.js/margin-api.js/chain-api.js/account-resolve.js await MarginWarmup.ensureWarm(); the background opens the margin-calculator page in a hidden tab, polls recovery via a page-context accounts/v1 probe (strict: JSON + acctDetails required, so the 200-HTML maintenance page can't fake success), closes the tab; deduped with cooldowns on both sides. (3) main.js's onMessage catch-all no longer answers _fmc types it doesn't own — it preempted other listeners' single sendResponse slot (would have broken the probe). CLAUDE.md documents the cold-session behavior.
+
+Verification: 30 vm-based checks across four harnesses (MarginWarmup module incl. strict probe scenarios; AccountResolve fallback chain; background handler tab lifecycle; positions 500→warm→retry recovery), node --check on all 10 modified files, manifest JSON parse. Independent reviewer round found 2 critical + 1 risk; all verified real and fixed, harnesses extended accordingly.
+
+Risks/follow-ups: cold-session recovery could not be exercised against a genuinely cold Fidelity session (the test browser was already warm and runs the signed CRX, not a worktree load); behavior rests on the live A/B probes from diagnosis plus the simulated tests. First real-world cold-session use should confirm a hidden margin-calculator tab briefly opens and the panel recovers within ~30 s.
+<!-- SECTION:FINAL_SUMMARY:END -->
