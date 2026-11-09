@@ -102,7 +102,7 @@
   function ensureFab() {
     if (document.getElementById(FAB_ID)) return;
     const fab = el('button', { id: FAB_ID, type: 'button', className: BTN_CLASS, textContent: 'Optimize cash', title: 'Find the best after-tax money-market fund for this account (read-only until you click Fill ticket)' });
-    fab.addEventListener('click', async () => open(null, await pageAccount()));
+    fab.addEventListener('click', () => open(null, null, pageAccount()));
     document.body.append(fab);
   }
 
@@ -385,13 +385,21 @@
     return el('div', { className: 'fmc-mmf-row' }, el('span', { textContent: label }), el('span', { className: cls ?? '', textContent: value }));
   }
 
-  async function open(ticker, account) {
+  /**
+   * Opens the panel. `accountPromise` (FAB only) resolves the account after the panel is
+   * already showing its loading state — on a cold session the lookup can involve a warm-up
+   * plus retries, and the button must not look dead during that wait.
+   */
+  async function open(ticker, account, accountPromise) {
     view.ticker = ticker; view.account = account;
     closePanel();
     panel = el('div', { id: PANEL_ID, role: 'dialog', 'aria-label': 'Money-market optimizer' });
     document.body.append(panel);
     render({ loading: true });
-    try { render(await compute()); } catch (err) { log('compute failed:', err); render({ error: err?.message || 'Something went wrong.' }); }
+    try {
+      if (accountPromise) view.account = await accountPromise;
+      render(await compute());
+    } catch (err) { log('compute failed:', err); render({ error: err?.message || 'Something went wrong.' }); }
   }
 
   function render(res) {
