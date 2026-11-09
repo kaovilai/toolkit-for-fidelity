@@ -303,13 +303,14 @@ importScripts('/lib/constants.js', '/lib/fetch-utils.js', '/lib/retry.js', '/lib
    * margin-warmup.js listener runs the accounts/v1 check in page context (same-origin
    * cookies) and answers; a tab whose content script hasn't loaded yet rejects, which
    * counts as "not ready" rather than an error. The reply is capped at
-   * WARM_PROBE_REPLY_TIMEOUT_MS so a stalled tab or hung message channel cannot push the
-   * polling loop past its deadline — the deadline must bound the whole warm-up, tab cleanup
-   * included.
+   * `remainingMs` (never more than WARM_PROBE_REPLY_TIMEOUT_MS) so a stalled tab or hung
+   * message channel cannot push the polling loop past its deadline — the deadline must
+   * bound the whole warm-up, tab cleanup included.
    * @param {number} tabId - The hidden margin-calculator tab.
+   * @param {number} remainingMs - Budget left in this warm-up; the reply wait never exceeds it.
    * @returns {Promise<boolean>}
    */
-  function probeWarmTab(tabId) {
+  function probeWarmTab(tabId, remainingMs) {
     const reply = new Promise((resolve) => {
       try {
         chrome.tabs.sendMessage(tabId, { _fmc: true, type: FMC_CONSTANTS.MESSAGE_TYPES.WARM_PROBE }, (resp) => {
@@ -321,7 +322,8 @@ importScripts('/lib/constants.js', '/lib/fetch-utils.js', '/lib/retry.js', '/lib
       }
     });
     let timer;
-    const timeout = new Promise((resolve) => { timer = setTimeout(() => resolve(false), WARM_PROBE_REPLY_TIMEOUT_MS); });
+    const capMs = Math.max(0, Math.min(WARM_PROBE_REPLY_TIMEOUT_MS, remainingMs));
+    const timeout = new Promise((resolve) => { timer = setTimeout(() => resolve(false), capMs); });
     return Promise.race([reply, timeout]).finally(() => clearTimeout(timer));
   }
 
@@ -341,9 +343,12 @@ importScripts('/lib/constants.js', '/lib/fetch-utils.js', '/lib/retry.js', '/lib
       try {
         tab = await chrome.tabs.create({ url: FMC_CONSTANTS.API.MARGIN_CALCULATOR_PAGE_URL, active: false });
         const deadline = Date.now() + WARM_TAB_BUDGET_MS;
+        // Both the sleep and each probe's reply wait are capped by the budget remaining, so
+        // the deadline bounds the whole loop — a stalled probe can no longer run cleanup
+        // past it.
         while (Date.now() < deadline) {
-          await new Promise(r => setTimeout(r, WARM_PROBE_INTERVAL_MS));
-          if (await probeWarmTab(tab.id)) {
+          await new Promise(r => setTimeout(r, Math.min(WARM_PROBE_INTERVAL_MS, deadline - Date.now())));
+          if (await probeWarmTab(tab.id, deadline - Date.now())) {
             warmSucceededAt = Date.now();
             persistWarmState();
             log('Margin-calculator warm-up succeeded');
@@ -360,7 +365,9 @@ importScripts('/lib/constants.js', '/lib/fetch-utils.js', '/lib/retry.js', '/lib
         persistWarmState();
         return false;
       } finally {
-        if (tab?.id != null) chrome.tabs.remove(tab.id).catch(() => {});
+        if (tab?.id != null) {
+          chrome.tabs.remove(tab.id).catch(e => warn('Could not close the warm-up tab (it may already be gone):', e?.message ?? e));
+        }
       }
     })().finally(() => { warmInflight = null; });
     return warmInflight;

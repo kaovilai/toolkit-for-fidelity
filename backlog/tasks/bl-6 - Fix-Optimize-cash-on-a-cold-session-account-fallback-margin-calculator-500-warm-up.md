@@ -7,7 +7,7 @@ status: Done
 assignee:
   - Tiger
 created_date: '2026-11-09 14:49'
-updated_date: '2026-11-09 15:14'
+updated_date: '2026-11-09 15:55'
 labels: []
 dependencies: []
 ordinal: 6000
@@ -67,6 +67,17 @@ Implementation complete (2026-11-09), pending review + commit:
 Verification: node --check on all 8 modified files + manifest JSON parse; vm-based tests all pass — MarginWarmup module (8 checks: dedup, cooldowns, failure paths, probe listener), background handler (7 checks: ok response, one hidden tab, tab closed, probe polling, timing, cooldown, unknown-type rejection), positions.js integration (4 checks: 500→warm-up→retry recovery, cooldown reuse, retry count).
 
 Note: could not live-test against a genuinely cold Fidelity session — the neo test browser's session was already warm by the time the root cause was identified, and its installed extension is the signed CRX, not a worktree load. Cold-session behavior is inferred from the live A/B probes (identical bodies: 500 cold / 200 warm, persisting across navigations).
+
+Review round 2 (Copilot + CodeRabbit GitHub App on PR #387, 2026-11-09) — 7 inline findings, all verified real, fixed in f1c5770 and 45090da:
+
+- Cooldowns lost on MV3 service-worker restart (no heartbeat from Optimize cash) → both warm-up timestamps persist to chrome.storage.session, restored once per worker lifetime (session storage clears when the browser closes, matching the server-side state's lifetime).
+- Unbounded probe wait (fetch with no timeout could stall the polling loop past the 30 s deadline, leaving the tab open and warmInflight held) → probe fetch aborts after 8 s (AbortSignal.timeout), background caps each reply at 10 s via Promise.race; verified: never-replying probe still fails bounded at ~34.5 s with the tab closed.
+- accounts/v1 fetch had no timeout → now fetchWithTimeout (POSITIONS_API timeout); timeouts classified retryable network errors.
+- 200 text/html maintenance page parsed outside the retry loop → parsing moved inside; HTML classified retryable API_ERROR (warm-up + backoff apply).
+- Storage write failure discarded a successfully fetched account → cache write now best effort.
+- FAB looked dead during a cold-session account lookup → panel opens in loading state immediately, account resolved after.
+
+All 7 threads replied and resolved (4 auto-resolved on push, 3 resolved manually). Harnesses extended: background 13 checks (incl. restart restore, unresponsive probe bound), account-resolve 11 checks (incl. HTML retry, cache-fail, timeout, session-expiry). PR #387 CLEAN/MERGEABLE on 45090da; watch stays armed for the bots' re-review of the new head.
 <!-- SECTION:NOTES:END -->
 
 ## Comments
