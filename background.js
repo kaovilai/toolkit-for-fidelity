@@ -348,6 +348,10 @@ importScripts('/lib/constants.js', '/lib/fetch-utils.js', '/lib/retry.js', '/lib
         // past it.
         while (Date.now() < deadline) {
           await new Promise(r => setTimeout(r, Math.min(WARM_PROBE_INTERVAL_MS, deadline - Date.now())));
+          // The sleep is capped by the remaining budget, but the deadline can still have
+          // passed by the time it fires — don't start a probe past it (a zero-remaining
+          // reply race could otherwise still let a late reply report success).
+          if (Date.now() >= deadline) break;
           if (await probeWarmTab(tab.id, deadline - Date.now())) {
             warmSucceededAt = Date.now();
             persistWarmState();
