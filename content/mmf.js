@@ -302,8 +302,12 @@
         const input = root.querySelector(`input[id="${id}"]`);
         if (!input) return false;
         setValue(input, ticker);
-        await waitFor(() => [...document.querySelectorAll('[role="option"]')].some(o => visible(o) && new RegExp(`\\b${ticker}\\b`).test(o.innerText)), 4000);
-        clickOption(new RegExp(`\\b${ticker}\\b`));
+        // Escape the ticker before embedding it in a RegExp — tickers come from API
+        // responses (holdings/screener) and are validated against MMF_TICKER_RE, but a
+        // metacharacter slipping through that guard must not turn into a pattern.
+        const re = new RegExp(`\\b${ticker.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}\\b`);
+        await waitFor(() => [...document.querySelectorAll('[role="option"]')].some(o => visible(o) && re.test(o.innerText)), 4000);
+        clickOption(re);
         await sleepMs(500);
         return true;
       };

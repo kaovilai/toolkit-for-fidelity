@@ -7,7 +7,7 @@ status: Done
 assignee:
   - Tiger
 created_date: '2026-11-09 14:49'
-updated_date: '2026-11-09 15:55'
+updated_date: '2026-11-09 16:01'
 labels: []
 dependencies: []
 ordinal: 6000
@@ -78,6 +78,14 @@ Review round 2 (Copilot + CodeRabbit GitHub App on PR #387, 2026-11-09) — 7 in
 - FAB looked dead during a cold-session account lookup → panel opens in loading state immediately, account resolved after.
 
 All 7 threads replied and resolved (4 auto-resolved on push, 3 resolved manually). Harnesses extended: background 13 checks (incl. restart restore, unresponsive probe bound), account-resolve 11 checks (incl. HTML retry, cache-fail, timeout, session-expiry). PR #387 CLEAN/MERGEABLE on 45090da; watch stays armed for the bots' re-review of the new head.
+
+Review round 3 (CodeRabbit verification follow-ups on PR #387, 2026-11-09) — 2 accepted, 1 declined:
+
+- Deadline overrun: the warm-up budget was checked only between probes, so a stalled 10 s probe reply could push cleanup to ~34.5 s. Fixed in 5f18a4a: probe reply wait and inter-probe sleep are capped by the remaining budget; never-replying probe now fails at exactly the 30 s budget (harness-verified). tabs.remove failures logged instead of swallowed.
+- Malformed JSON (JSON content-type, unparseable body) now retryable API_ERROR, matching the HTML maintenance path; parseable-but-wrong-shape stays non-retryable. Harness scenario added (12 checks).
+- Declined with written reason: calling MarginWarmup.ensureWarm() on the 200-HTML maintenance path — the warm-up targets the cold-session 500 signature specifically; a maintenance page is Fidelity being down, and waiting on a warm-up probe there only delays the retry.
+
+PR on 5f18a4a, CLEAN/MERGEABLE, 0 unresolved threads; watch armed for re-review of the new head.
 <!-- SECTION:NOTES:END -->
 
 ## Comments

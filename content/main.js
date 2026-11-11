@@ -534,7 +534,7 @@
         return;
       }
       if (!priceList) {
-        log('Fetching positions for', accountNum);
+        log('Fetching positions for', redactAccount(accountNum));
         try {
           ({ priceList, baselineData } = await PositionsAPI.fetchStatus(accountNum));
         } catch (posErr) {

@@ -11,13 +11,21 @@ const key = crypto.createPrivateKey(pem);
 const spki = crypto.createPublicKey(key).export({ type: 'spki', format: 'der' });
 
 const stage = fs.mkdtempSync(path.join(os.tmpdir(), 'crx-'));
-fs.cpSync(dir, stage + '/ext', { recursive: true });
+// Ship an explicit allowlist, never whatever happens to sit in the source directory:
+// gitignored files can hold real account numbers, cookies or keys (CLAUDE.md privacy
+// section), and a plain recursive copy would package them into the public CRX.
+const SHIP = ['manifest.json', 'background.js', 'rules.json', 'icons', 'content', 'lib', 'popup'];
+for (const name of SHIP) {
+  const src = path.join(dir, name);
+  if (!fs.existsSync(src)) { console.error(`build-crx: missing ${name} in ${dir}`); process.exit(1); }
+  fs.cpSync(src, path.join(stage, 'ext', name), { recursive: true });
+}
 const mp = stage + '/ext/manifest.json';
 const m = JSON.parse(fs.readFileSync(mp, 'utf8'));
 if (updateUrl) m.update_url = updateUrl;
 fs.writeFileSync(mp, JSON.stringify(m, null, 2));
 const zipPath = stage + '/ext.zip';
-cp.execFileSync('zip', ['-qr', zipPath, '.', '-x', '*.DS_Store', '.git/*'], { cwd: stage + '/ext' });
+cp.execFileSync('zip', ['-qr', zipPath, '.', '-x', '*.DS_Store'], { cwd: stage + '/ext' });
 const zip = fs.readFileSync(zipPath);
 
 const varint = (n) => { const o = []; for (; n > 0x7f; n = Math.floor(n / 128)) o.push((n & 0x7f) | 0x80); o.push(n); return Buffer.from(o); };
