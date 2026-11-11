@@ -827,10 +827,11 @@
             }
             await handleTradeReady(lastAccountNum, lastOrders);
           })().catch(err => log('Error during force-recalc:', err));
-        } else {
-          // Unexpected _fmc message type — acknowledge to avoid "port closed before response" warnings.
-          sendResponse({ error: 'unhandled message type' });
         }
+        // Only FORCE_RECALC is handled here. Other _fmc types belong to other listeners
+        // (the background router, margin-warmup's WARM_PROBE, …): each message port allows
+        // exactly one sendResponse, so answering a type this listener doesn't own would
+        // preempt the real owner's reply. Stay silent and let the owner respond.
         return false; // synchronous response already sent — close port immediately
       });
     }

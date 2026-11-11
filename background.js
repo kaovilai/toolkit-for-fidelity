@@ -250,6 +250,133 @@ importScripts('/lib/constants.js', '/lib/fetch-utils.js', '/lib/retry.js', '/lib
     }
   }
 
+  // --- Margin-calculator warm-up (cold-session 500 recovery) ---
+  // Until the margin calculator page has been loaded once per browsing session, every
+  // api-margin-calculator endpoint answers 500 "Unknown System Exception": the page's load
+  // sequence creates server-side state the API depends on. When a content script hits a
+  // retryable 5xx it sends WARM_MARGIN_CALC; this opens the page in a hidden tab, polls
+  // recovery through the tab's own WARM_PROBE listener (the service worker cannot call the
+  // API itself — its requests carry the extension origin, which Fidelity rejects), then
+  // closes the tab. Deduplicated across all tabs; cooldowns stop a genuine outage from
+  // churning tabs.
+  const WARM_SUCCESS_COOLDOWN_MS = 5 * 60 * 1000; // after a confirmed recovery, don't re-open
+  const WARM_FAILURE_COOLDOWN_MS = 60 * 1000;     // after a failed attempt, wait before retrying
+  const WARM_TAB_BUDGET_MS = 30 * 1000;           // total time allowed for tab load + probes
+  const WARM_PROBE_INTERVAL_MS = 1500;
+  const WARM_PROBE_REPLY_TIMEOUT_MS = 10 * 1000;  // cap on one probe's reply wait
+  let warmInflight = null;  // shared promise while a warm-up is running (memory-only: dedups concurrent callers)
+  let warmSucceededAt = 0;  // last confirmed recovery
+  let warmFailedAt = 0;     // last failed attempt (guards against tab churn during outages)
+  let warmStateRestored = null; // session-storage restore, once per service-worker lifetime
+
+  /**
+   * Restores the warm-up cooldown timestamps from chrome.storage.session (once per service
+   * worker lifetime). The worker stops after ~30 s idle — Optimize cash has no heartbeat
+   * keeping it alive — so in-memory timestamps alone would let a restarted worker bypass the
+   * cooldowns and open a duplicate warm-up tab. Session storage is cleared when the browser
+   * closes, exactly when Fidelity's server-side state also goes cold.
+   * @returns {Promise<void>}
+   */
+  function restoreWarmState() {
+    if (!warmStateRestored) {
+      warmStateRestored = chrome.storage.session
+        .get([FMC_CONSTANTS.STORAGE_KEY_WARM_OK, FMC_CONSTANTS.STORAGE_KEY_WARM_FAIL])
+        .then((r) => {
+          warmSucceededAt = r[FMC_CONSTANTS.STORAGE_KEY_WARM_OK] ?? 0;
+          warmFailedAt = r[FMC_CONSTANTS.STORAGE_KEY_WARM_FAIL] ?? 0;
+        })
+        .catch(() => {}); // storage.session unavailable — fall back to in-memory-only cooldowns
+    }
+    return warmStateRestored;
+  }
+
+  /** Persists the cooldown timestamps so a restarted worker honours them. */
+  function persistWarmState() {
+    chrome.storage.session.set({
+      [FMC_CONSTANTS.STORAGE_KEY_WARM_OK]: warmSucceededAt,
+      [FMC_CONSTANTS.STORAGE_KEY_WARM_FAIL]: warmFailedAt
+    }).catch(() => {});
+  }
+
+  /**
+   * Asks the warm-up tab whether the margin-calculator API has recovered. The tab's
+   * margin-warmup.js listener runs the accounts/v1 check in page context (same-origin
+   * cookies) and answers; a tab whose content script hasn't loaded yet rejects, which
+   * counts as "not ready" rather than an error. The reply is capped at
+   * `remainingMs` (never more than WARM_PROBE_REPLY_TIMEOUT_MS) so a stalled tab or hung
+   * message channel cannot push the polling loop past its deadline — the deadline must
+   * bound the whole warm-up, tab cleanup included.
+   * @param {number} tabId - The hidden margin-calculator tab.
+   * @param {number} remainingMs - Budget left in this warm-up; the reply wait never exceeds it.
+   * @returns {Promise<boolean>}
+   */
+  function probeWarmTab(tabId, remainingMs) {
+    const reply = new Promise((resolve) => {
+      try {
+        chrome.tabs.sendMessage(tabId, { _fmc: true, type: FMC_CONSTANTS.MESSAGE_TYPES.WARM_PROBE }, (resp) => {
+          if (chrome.runtime.lastError) return resolve(false);
+          resolve(!!resp?.ok);
+        });
+      } catch {
+        resolve(false);
+      }
+    });
+    let timer;
+    const capMs = Math.max(0, Math.min(WARM_PROBE_REPLY_TIMEOUT_MS, remainingMs));
+    const timeout = new Promise((resolve) => { timer = setTimeout(() => resolve(false), capMs); });
+    return Promise.race([reply, timeout]).finally(() => clearTimeout(timer));
+  }
+
+  /**
+   * Warms the margin-calculator backend: opens the page in a hidden tab and waits for the
+   * API to answer ok. Concurrent requests share one run; a recent success is returned
+   * without opening anything.
+   * @returns {Promise<boolean>} true when the backend answered ok.
+   */
+  async function warmMarginCalculator() {
+    await restoreWarmState();
+    if (Date.now() - warmSucceededAt < WARM_SUCCESS_COOLDOWN_MS) return true;
+    if (warmInflight) return warmInflight;
+    warmInflight = (async () => {
+      if (Date.now() - warmFailedAt < WARM_FAILURE_COOLDOWN_MS) return false;
+      let tab = null;
+      try {
+        tab = await chrome.tabs.create({ url: FMC_CONSTANTS.API.MARGIN_CALCULATOR_PAGE_URL, active: false });
+        const deadline = Date.now() + WARM_TAB_BUDGET_MS;
+        // Both the sleep and each probe's reply wait are capped by the budget remaining, so
+        // the deadline bounds the whole loop — a stalled probe can no longer run cleanup
+        // past it.
+        while (Date.now() < deadline) {
+          await new Promise(r => setTimeout(r, Math.min(WARM_PROBE_INTERVAL_MS, deadline - Date.now())));
+          // The sleep is capped by the remaining budget, but the deadline can still have
+          // passed by the time it fires — don't start a probe past it (a zero-remaining
+          // reply race could otherwise still let a late reply report success).
+          if (Date.now() >= deadline) break;
+          if (await probeWarmTab(tab.id, deadline - Date.now())) {
+            warmSucceededAt = Date.now();
+            persistWarmState();
+            log('Margin-calculator warm-up succeeded');
+            return true;
+          }
+        }
+        warn('Margin-calculator warm-up timed out — Fidelity may be having a real outage');
+        warmFailedAt = Date.now();
+        persistWarmState();
+        return false;
+      } catch (e) {
+        warn('Margin-calculator warm-up failed:', e?.message ?? e);
+        warmFailedAt = Date.now();
+        persistWarmState();
+        return false;
+      } finally {
+        if (tab?.id != null) {
+          chrome.tabs.remove(tab.id).catch(e => warn('Could not close the warm-up tab (it may already be gone):', e?.message ?? e));
+        }
+      }
+    })().finally(() => { warmInflight = null; });
+    return warmInflight;
+  }
+
   // --- Tax rates (IRS brackets + Tax Foundation state rates), cached 30 days ---
   const TAX_TTL_MS = 30 * 24 * 60 * 60 * 1000;
   // A result missing the IRS brackets or the state rate is retried after this (not cached for 30 days).
@@ -446,6 +573,12 @@ importScripts('/lib/constants.js', '/lib/fetch-utils.js', '/lib/retry.js', '/lib
 
         case FMC_CONSTANTS.MESSAGE_TYPES.FETCH_TAX_RATES:
           fetchTaxRates(String(msg.payload?.state ?? '')).then(sendResponse, (e) => sendResponse({ error: e?.message ?? 'fetch failed' }));
+          return true;
+
+        case FMC_CONSTANTS.MESSAGE_TYPES.WARM_MARGIN_CALC:
+          // Asynchronous: keep the message port open until the warm-up settles. Responds
+          // { ok: false } (never an error) so the caller's normal retry path is untouched.
+          warmMarginCalculator().then(ok => sendResponse({ ok }), () => sendResponse({ ok: false }));
           return true;
 
         default:

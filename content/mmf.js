@@ -79,14 +79,19 @@
 
   const FAB_ID = 'fmc-mmf-fab';
 
-  /** Account number for the always-visible button: the URL hash (#ZXXXXXXXX) or the last-used account. */
+  /**
+   * Account number for the always-visible button: the URL hash (#ZXXXXXXXX), else the shared
+   * page-agnostic resolver (lib/account-resolve.js: open trade ticket → last-used account →
+   * Fidelity's default tradable account via accounts/v1). ChainCore is null on the positions
+   * page (it only initializes on option-chain/Trader+), so the shared lib is used directly.
+   * Without the accounts/v1 fallback, a session that has never opened a trade ticket panel has
+   * nothing stored and the button could not resolve an account at all.
+   * @returns {Promise<string|null>}
+   */
   async function pageAccount() {
     const fromHash = /[A-Z]\d{8}/.exec(location.hash)?.[0];
     if (fromHash) return fromHash;
-    try {
-      const r = await chrome.storage.local.get([FMC_CONSTANTS.STORAGE_KEY_CHAIN_ACCOUNT, FMC_CONSTANTS.STORAGE_KEY_STATUS]);
-      return r[FMC_CONSTANTS.STORAGE_KEY_STATUS]?.accountNum ?? r[FMC_CONSTANTS.STORAGE_KEY_CHAIN_ACCOUNT] ?? null;
-    } catch { return null; }
+    try { return await AccountResolve.getAccount(); } catch { return null; }
   }
 
   /**
@@ -97,7 +102,7 @@
   function ensureFab() {
     if (document.getElementById(FAB_ID)) return;
     const fab = el('button', { id: FAB_ID, type: 'button', className: BTN_CLASS, textContent: 'Optimize cash', title: 'Find the best after-tax money-market fund for this account (read-only until you click Fill ticket)' });
-    fab.addEventListener('click', async () => open(null, await pageAccount()));
+    fab.addEventListener('click', () => open(null, null, pageAccount()));
     document.body.append(fab);
   }
 
@@ -161,7 +166,7 @@
   async function compute() {
     const { account, reserve } = view;
     const out = { error: null };
-    if (!account) { out.error = 'Could not determine the account for this row.'; return out; }
+    if (!account) { out.error = 'Could not determine which account to use — open a trade ticket on this page first, then try again.'; return out; }
     await TaxContext.ready();
     const [status, fundsResp] = await Promise.all([PositionsAPI.fetchStatus(account), ask(MESSAGE_TYPES.FETCH_MMF_YIELDS)]);
     if (fundsResp.error) { out.error = fundsResp.error; out.retryable = true; return out; }
@@ -380,13 +385,21 @@
     return el('div', { className: 'fmc-mmf-row' }, el('span', { textContent: label }), el('span', { className: cls ?? '', textContent: value }));
   }
 
-  async function open(ticker, account) {
+  /**
+   * Opens the panel. `accountPromise` (FAB only) resolves the account after the panel is
+   * already showing its loading state — on a cold session the lookup can involve a warm-up
+   * plus retries, and the button must not look dead during that wait.
+   */
+  async function open(ticker, account, accountPromise) {
     view.ticker = ticker; view.account = account;
     closePanel();
     panel = el('div', { id: PANEL_ID, role: 'dialog', 'aria-label': 'Money-market optimizer' });
     document.body.append(panel);
     render({ loading: true });
-    try { render(await compute()); } catch (err) { log('compute failed:', err); render({ error: err?.message || 'Something went wrong.' }); }
+    try {
+      if (accountPromise) view.account = await accountPromise;
+      render(await compute());
+    } catch (err) { log('compute failed:', err); render({ error: err?.message || 'Something went wrong.' }); }
   }
 
   function render(res) {

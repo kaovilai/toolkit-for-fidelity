@@ -46,7 +46,7 @@ Key balance fields: `marginCreditDebit` (positive=credit, negative=debit/interes
 
 - **orders**: required (empty `orders: []` is rejected). `orderSymbol` keeps the leading `-` for options; `orderAction` e.g. `SO` (sell to open).
 - **priceList**: required. Build it from `current-status` positions, **skipping positions with no `symbol`** (T-bills carry only a CUSIP) — this mirrors what Fidelity's own page sends. Option symbols in the `priceList` have no leading `-` (`F271217P10`).
-- **Page context**: API works from any `digital.fidelity.com` page.
+- **Page context**: API works from any `digital.fidelity.com` page — but on a **cold session** (before the margin-calculator page itself has been loaded once), every `api-margin-calculator` endpoint returns 500 `F-PI-MARGIN CALCULATOR WEB API-5001 "Unknown System Exception"`; the page's load sequence creates server-side state the API requires (not Referer or request shape — identical bodies 500 cold, 200 warm). `lib/margin-warmup.js` + the `WARM_MARGIN_CALC` handler in `background.js` recover: on a retryable 5xx they open the margin-calculator page in a hidden tab, poll recovery via the tab's `WARM_PROBE` listener (the service worker cannot call the API itself — extension-origin requests are rejected), close the tab, and let the existing retry succeed.
 
 ### Architecture
 
