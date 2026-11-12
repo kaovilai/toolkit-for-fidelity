@@ -169,7 +169,7 @@ importScripts('/lib/constants.js', '/lib/fetch-utils.js', '/lib/retry.js', '/lib
       // Invalidate cache for old account
       cacheInvalidate(null, `${FMC_CONSTANTS.CACHE_KEY_PREFIX.PRICELIST}${previousAccountNum}`);
       cacheInvalidate(null, `${FMC_CONSTANTS.CACHE_KEY_PREFIX.PROJECTED}${previousAccountNum}`);
-      log('Account switched', previousAccountNum, '->', accountNum, '- cache cleared');
+      log('Account switched', redactAccount(previousAccountNum), '->', redactAccount(accountNum), '- cache cleared');
     }
     return { ok: true };
   }

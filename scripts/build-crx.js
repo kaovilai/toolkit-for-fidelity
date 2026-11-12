@@ -11,13 +11,40 @@ const key = crypto.createPrivateKey(pem);
 const spki = crypto.createPublicKey(key).export({ type: 'spki', format: 'der' });
 
 const stage = fs.mkdtempSync(path.join(os.tmpdir(), 'crx-'));
-fs.cpSync(dir, stage + '/ext', { recursive: true });
+// Ship an explicit allowlist, never whatever happens to sit in the source directory:
+// gitignored files can hold real account numbers, cookies or keys (CLAUDE.md privacy
+// section), and a plain recursive copy would package them into the public CRX.
+const SHIP = ['manifest.json', 'background.js', 'rules.json', 'icons', 'content', 'lib', 'popup'];
+// Within shipped directories, only extension source types are packaged (js/json/css/html/png).
+// A gitignored stray dropped inside a shipped directory — a .pem key, settings.local.json,
+// a cookie sample, the icon generator's .py/.svg — must not reach the CRX. Hidden files,
+// hidden directories, and symlinks are skipped, plus these known-sensitive names even when
+// their extension would otherwise pass (settings.local.json is a .json).
+const SHIP_EXT = /\.(js|json|css|html|png)$/i;
+const SKIP_NAME = /\.(pem|key|p12|pfx|sample)$/i;
+const shipFile = (name) => SHIP_EXT.test(name) && !SKIP_NAME.test(name) && name !== 'settings.local.json';
+function copyTree(src, dest) {
+  fs.mkdirSync(dest, { recursive: true });
+  for (const e of fs.readdirSync(src, { withFileTypes: true })) {
+    if (e.name.startsWith('.')) continue;
+    const s = path.join(src, e.name);
+    if (e.isDirectory()) copyTree(s, path.join(dest, e.name));
+    else if (e.isFile() && shipFile(e.name)) fs.copyFileSync(s, path.join(dest, e.name));
+  }
+}
+fs.mkdirSync(stage + '/ext', { recursive: true });
+for (const name of SHIP) {
+  const src = path.join(dir, name);
+  if (!fs.existsSync(src)) { console.error(`build-crx: missing ${name} in ${dir}`); process.exit(1); }
+  if (fs.statSync(src).isDirectory()) copyTree(src, path.join(stage, 'ext', name));
+  else fs.copyFileSync(src, path.join(stage, 'ext', name));
+}
 const mp = stage + '/ext/manifest.json';
 const m = JSON.parse(fs.readFileSync(mp, 'utf8'));
 if (updateUrl) m.update_url = updateUrl;
 fs.writeFileSync(mp, JSON.stringify(m, null, 2));
 const zipPath = stage + '/ext.zip';
-cp.execFileSync('zip', ['-qr', zipPath, '.', '-x', '*.DS_Store', '.git/*'], { cwd: stage + '/ext' });
+cp.execFileSync('zip', ['-qr', zipPath, '.', '-x', '*.DS_Store'], { cwd: stage + '/ext' });
 const zip = fs.readFileSync(zipPath);
 
 const varint = (n) => { const o = []; for (; n > 0x7f; n = Math.floor(n / 128)) o.push((n & 0x7f) | 0x80); o.push(n); return Buffer.from(o); };
