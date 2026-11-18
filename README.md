@@ -229,7 +229,20 @@ fidelity-margin-calculator-auto/
 
 ## Install
 
-**Chrome / Chromium on desktop:** see [Development](#development) to load the unpacked folder.
+**Chrome / Chromium on desktop:** see [Development](#development) to load the unpacked folder. An install from a folder has no `update_url`, so it never updates itself. Google Chrome builds (Windows/macOS) block self-hosted `.crx` installs entirely, so unpacked is the only option there; Chromium-family builds that allow self-hosted extensions can use the signed `.crx` below instead and get updates.
+
+**Chromium with [chromium-web-store](https://github.com/NeverDecaf/chromium-web-store):** the signed `.crx` on each [release](https://github.com/kaovilai/toolkit-for-fidelity/releases/latest) carries an `update_url` pointing at this repo's [update manifest](https://github.com/kaovilai/toolkit-for-fidelity/releases/latest/download/updates.xml) — the combination [chromium-web-store](https://github.com/NeverDecaf/chromium-web-store#if-you-are-a-chrome-extension-developer) uses to update extensions that are not on the Chrome Web Store.
+
+1. Install [chromium-web-store](https://github.com/NeverDecaf/chromium-web-store#installation), then prepare the browser so CRX files can install:
+   - **ungoogled-chromium:** set the `chrome://flags/#extension-mime-request-handling` flag to **Always prompt for install** (required by its README).
+   - **Other Chromium builds:** open chromium-web-store's options (`chrome://extensions/?options=ocaahdebbfolfmndjeplogmgcagdmblk`) and enable **Advanced → Always download CRX files**.
+2. Install this extension: open the signed CRX — [direct link](https://github.com/kaovilai/toolkit-for-fidelity/releases/latest/download/toolkit-for-fidelity.crx). On ungoogled-chromium this offers the install prompt directly; on other builds the file downloads and `chrome://extensions` opens for drag-and-drop (developer mode on).
+3. Pin the chromium-web-store icon to your toolbar — its update badge is hidden until pinned.
+4. Auto-updates: chromium-web-store checks each installed extension's update manifest (hourly by default) and raises its toolbar badge when a newer version is available. Click the badge, then **Toolkit for Fidelity**, to download and install the latest version (an update may need a browser restart to finish installing). Checking non-store extensions is on by default (its *Check for updates to non-web store extensions* option); updates can also be forced from its context menu → *Update all*.
+
+Migrating from an unpacked install: a folder install has a different extension ID than the signed `.crx`, so its settings do not carry over and there is no export/import — note your settings first, install the `.crx`, re-enter them, then remove the old copy.
+
+How the auto-update setup works (for maintainers): push a `v*` tag matching `manifest.json`'s `version`. The release workflow builds the CRX with `--update-url …/releases/latest/download/updates.xml`, computes the extension ID from the signing key, and attaches an `updates.xml` (`appid`, `version`, `codebase`) to the release — the update manifest format chromium-web-store (and Chromium's own updater) expect. The `CRX_PEM_B64` secret must never change: the extension ID is derived from that key, and a different key breaks in-place updates.
 
 **Titanium Browser (Android):** each [release](https://github.com/kaovilai/toolkit-for-fidelity/releases/latest) carries a signed `toolkit-for-fidelity.crx`. It installs once and then updates itself.
 
@@ -242,7 +255,7 @@ fidelity-margin-calculator-auto/
    Or download the `.crx` and use *Titanium Extension → Options → install from file*.
 2. Tap **Download**, then **Keep**, then **Add extension**.
 
-Updates then arrive automatically through the extension's `update_url`. An install from a folder or zip has a different extension ID, so export your settings, install the `.crx`, import them, and remove the old copy.
+Updates then arrive automatically through the extension's `update_url`. An install from a folder or zip has a different extension ID — see the migration note above.
 
 ## Development
 
